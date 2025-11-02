@@ -11,7 +11,7 @@ class Transaction(db.Model):
     amount = db.Column(db.Float, nullable=False)
     fee = db.Column(db.Float, default=0.0)
     total_amount = db.Column(db.Float, nullable=False)
-    type = db.Column(db.String(50), default='transfer')  # 'transfer', 'add_funds'
+    type = db.Column(db.String(50), default='transfer')  # 'transfer', 'pesapay_deposit', 'add_funds'
     status = db.Column(db.String(20), default='completed')  # 'completed', 'pending', 'failed'
     note = db.Column(db.Text)
     merchant_request_id = db.Column(db.String(100), index=True)  # For matching callbacks

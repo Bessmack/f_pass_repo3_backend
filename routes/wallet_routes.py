@@ -1,4 +1,7 @@
 import requests
+import base64
+import hashlib
+import json
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
@@ -10,31 +13,32 @@ from utils.notification_helpers import send_deposit_notification
 
 bp = Blueprint('wallet', __name__, url_prefix='/api/wallet')
 
-# M-Pesa Config (Daraja Sandbox/Test)
-MPESA_CONSUMER_KEY = os.getenv("MPESA_CONSUMER_KEY")
-MPESA_CONSUMER_SECRET = os.getenv("MPESA_CONSUMER_SECRET")
-MPESA_SHORTCODE = os.getenv("MPESA_SHORTCODE")
-MPESA_PASSKEY = os.getenv("MPESA_PASSKEY")
-CALLBACK_URL = os.getenv("CALLBACK_URL")
+# Pesapay Configuration
+PESAPAY_BASE_URL = os.getenv("PESAPAY_BASE_URL", "https://pay.pesapay.com/api")
+PESAPAY_MERCHANT_ID = os.getenv("PESAPAY_MERCHANT_ID")
+PESAPAY_API_KEY = os.getenv("PESAPAY_API_KEY")
+PESAPAY_API_SECRET = os.getenv("PESAPAY_API_SECRET")
+PESAPAY_CALLBACK_URL = os.getenv("PESAPAY_CALLBACK_URL")
 
-def get_access_token():
-    url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-    response = requests.get(url, auth=(MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET))
-    data = response.json()
-    print("🔑 Access Token Response:", data)
-    return data.get("access_token")
+def generate_pesapay_signature(api_key, api_secret, merchant_id, amount, currency, reference, timestamp):
+    """
+    Generate Pesapay API signature
+    """
+    data = f"{api_key}{api_secret}{merchant_id}{amount}{currency}{reference}{timestamp}"
+    return hashlib.sha256(data.encode()).hexdigest()
 
 @bp.route('/deposit', methods=['POST'])
 @jwt_required()
-def mpesa_deposit():
-    """Initiate M-Pesa STK Push"""
+def pesapay_deposit():
+    """Initiate Pesapay payment"""
     try:
         current_user_id = get_jwt_identity()
         data = request.get_json()
-        print(f"📥 Received data: {data}")
+        print(f"📥 Received Pesapay deposit request: {data}")
         
         amount = float(data.get('amount'))
         phone = data.get('phone')
+        currency = data.get('currency', 'USD')
         
         print(f"💰 Amount: {amount}, 📱 Phone: {phone}, 👤 User ID: {current_user_id}")
 
@@ -46,64 +50,82 @@ def mpesa_deposit():
         if not wallet:
             return jsonify({'error': 'Wallet not found'}), 404
 
-        access_token = get_access_token()
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-
-        password = f"{MPESA_SHORTCODE}{MPESA_PASSKEY}{timestamp}".encode("utf-8")
-        import base64
-        password = base64.b64encode(password).decode("utf-8")
-
-        stk_push_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
+        # Generate unique transaction reference
+        transaction_reference = generate_unique_id('PESAPAY')
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         
-        # Use user_id as AccountReference to track who initiated the transaction
+        # Generate Pesapay signature
+        signature = generate_pesapay_signature(
+            PESAPAY_API_KEY,
+            PESAPAY_API_SECRET,
+            PESAPAY_MERCHANT_ID,
+            f"{amount:.2f}",
+            currency,
+            transaction_reference,
+            timestamp
+        )
+
+        # Prepare Pesapay payment request
+        payment_url = f"{PESAPAY_BASE_URL}/v1/payments/request"
+        
         payload = {
-            "BusinessShortCode": MPESA_SHORTCODE,
-            "Password": password,
-            "Timestamp": timestamp,
-            "TransactionType": "CustomerPayBillOnline",
-            "Amount": amount,
-            "PartyA": phone,
-            "PartyB": MPESA_SHORTCODE,
-            "PhoneNumber": phone,
-            "CallBackURL": CALLBACK_URL,
-            "AccountReference": str(current_user_id),  # Store user_id here
-            "TransactionDesc": "Deposit to Wallet"
+            "merchant_id": PESAPAY_MERCHANT_ID,
+            "api_key": PESAPAY_API_KEY,
+            "signature": signature,
+            "timestamp": timestamp,
+            "amount": f"{amount:.2f}",
+            "currency": currency,
+            "reference": transaction_reference,
+            "description": f"Wallet deposit - {transaction_reference}",
+            "callback_url": PESAPAY_CALLBACK_URL,
+            "customer": {
+                "phone": phone,
+                "email": "",  # You can get user email if available
+                "name": ""    # You can get user name if available
+            },
+            "metadata": {
+                "user_id": str(current_user_id),
+                "wallet_id": wallet.wallet_id,
+                "transaction_type": "wallet_deposit"
+            }
         }
 
-        res = requests.post(stk_push_url, json=payload, headers=headers)
-        print("🔍 Raw STK Push Response Text:", res.text)
-        print("🔍 HTTP Status Code:", res.status_code)
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        print(f"🔗 Sending request to Pesapay: {payment_url}")
+        print(f"📦 Payload: {json.dumps(payload, indent=2)}")
+
+        response = requests.post(payment_url, json=payload, headers=headers, timeout=30)
+        
+        print(f"🔍 Pesapay Response Status: {response.status_code}")
+        print(f"🔍 Pesapay Response Text: {response.text}")
 
         try:
-            response_data = res.json()
+            response_data = response.json()
         except Exception as e:
-            print("❌ JSON decode failed:", str(e))
-            return jsonify({'error': 'Invalid response from Safaricom', 'raw': res.text}), 500
-        
-        print(f"🔍 STK Push Response: {response_data}")
-        print(f"🔍 HTTP Status: {res.status_code}")
+            print(f"❌ JSON decode failed: {str(e)}")
+            return jsonify({'error': 'Invalid response from Pesapay', 'raw': response.text}), 500
 
-        if "ResponseCode" in response_data and response_data["ResponseCode"] == "0":
+        if response.status_code == 200 and response_data.get('success'):
             # Create pending transaction record
-            checkout_request_id = response_data.get("CheckoutRequestID")
-            merchant_request_id = response_data.get("MerchantRequestID")
+            pesapay_transaction_id = response_data.get('data', {}).get('transaction_id')
+            payment_url = response_data.get('data', {}).get('payment_url')
             
             pending_transaction = Transaction(
-                transaction_id=generate_unique_id('TXN'),
+                transaction_id=transaction_reference,
                 sender_id=current_user_id,
                 receiver_id=current_user_id,
                 amount=amount,
                 fee=0.0,
                 total_amount=amount,
-                type='mpesa_deposit',
+                type='pesapay_deposit',
                 status='pending',
-                note=f'M-Pesa deposit pending - {merchant_request_id}',
-                merchant_request_id=merchant_request_id,  # Store for callback matching
-                checkout_request_id=checkout_request_id
+                note=f'Pesapay deposit pending - Ref: {transaction_reference}',
+                merchant_request_id=pesapay_transaction_id,
+                checkout_request_id=transaction_reference
             )
             
             db.session.add(pending_transaction)
@@ -113,50 +135,65 @@ def mpesa_deposit():
             
             return jsonify({
                 'success': True,
-                'message': 'STK push initiated. Enter your M-Pesa PIN to complete transaction.',
+                'message': 'Payment initiated successfully',
                 'transaction_id': pending_transaction.transaction_id,
-                'checkout_request_id': checkout_request_id
+                'pesapay_transaction_id': pesapay_transaction_id,
+                'payment_url': payment_url,  # URL for user to complete payment
+                'reference': transaction_reference
             }), 200
         else:
-            return jsonify({'error': response_data}), 400
+            error_message = response_data.get('message', 'Payment initiation failed')
+            print(f"❌ Pesapay error: {error_message}")
+            return jsonify({'error': error_message}), 400
 
+    except requests.exceptions.Timeout:
+        print("❌ Pesapay API timeout")
+        return jsonify({'error': 'Payment service timeout. Please try again.'}), 408
+    except requests.exceptions.ConnectionError:
+        print("❌ Pesapay API connection error")
+        return jsonify({'error': 'Cannot connect to payment service. Please try again.'}), 503
     except Exception as e:
-        print(f"Error in mpesa_deposit: {str(e)}")
+        print(f"❌ Error in pesapay_deposit: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-
-@bp.route('/mpesa-callback', methods=['POST'])
-def mpesa_callback():
-    """Handle M-Pesa Callback from Safaricom"""
+@bp.route('/pesapay-callback', methods=['POST'])
+def pesapay_callback():
+    """Handle Pesapay payment callback"""
     try:
         data = request.get_json()
-        print(f"📥 M-Pesa Callback received: {data}")
+        print(f"📥 Pesapay Callback received: {json.dumps(data, indent=2)}")
         
-        result = data.get('Body', {}).get('stkCallback', {})
-        
-        merchant_request_id = result.get('MerchantRequestID')
-        checkout_request_id = result.get('CheckoutRequestID')
-        result_code = result.get('ResultCode')
-        result_desc = result.get('ResultDesc')
+        # Verify callback signature (important for security)
+        callback_signature = request.headers.get('X-Pesapay-Signature')
+        if not verify_pesapay_callback_signature(data, callback_signature):
+            print("❌ Invalid callback signature")
+            return jsonify({"status": "error", "message": "Invalid signature"}), 400
+
+        transaction_reference = data.get('reference')
+        status = data.get('status')  # 'success', 'failed', 'pending'
+        pesapay_transaction_id = data.get('transaction_id')
+        amount = data.get('amount')
+        currency = data.get('currency')
         
         print(f"🔍 Callback Details:")
-        print(f"   MerchantRequestID: {merchant_request_id}")
-        print(f"   CheckoutRequestID: {checkout_request_id}")
-        print(f"   ResultCode: {result_code}")
-        print(f"   ResultDesc: {result_desc}")
+        print(f"   Reference: {transaction_reference}")
+        print(f"   Status: {status}")
+        print(f"   Pesapay TXN ID: {pesapay_transaction_id}")
+        print(f"   Amount: {amount} {currency}")
 
-        # Find the pending transaction using MerchantRequestID
+        # Find the pending transaction
         transaction = Transaction.query.filter_by(
-            merchant_request_id=merchant_request_id,
+            transaction_id=transaction_reference,
             status='pending'
         ).first()
 
         if not transaction:
-            print(f"⚠️ No pending transaction found for MerchantRequestID: {merchant_request_id}")
-            # Still return success to Safaricom
-            return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+            print(f"⚠️ No pending transaction found for reference: {transaction_reference}")
+            return jsonify({"status": "error", "message": "Transaction not found"}), 404
 
-        # Get the user's wallet using the transaction's sender_id
+        # Get the user's wallet
         wallet = Wallet.query.filter_by(user_id=transaction.sender_id).first()
         
         if not wallet:
@@ -164,59 +201,154 @@ def mpesa_callback():
             transaction.status = 'failed'
             transaction.note = 'Wallet not found'
             db.session.commit()
-            return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+            return jsonify({"status": "error", "message": "Wallet not found"}), 404
 
-        if result_code == 0:  # Success
+        if status == 'success':
             print("✅ Payment successful!")
-            
-            metadata = result.get('CallbackMetadata', {}).get('Item', [])
-            amount = next((x['Value'] for x in metadata if x['Name'] == 'Amount'), 0)
-            mpesa_receipt = next((x['Value'] for x in metadata if x['Name'] == 'MpesaReceiptNumber'), None)
-            phone = next((x['Value'] for x in metadata if x['Name'] == 'PhoneNumber'), None)
-            
-            print(f"💰 Amount: {amount}")
-            print(f"🧾 M-Pesa Receipt: {mpesa_receipt}")
-            print(f"📱 Phone: {phone}")
-
-            send_deposit_notification(wallet.user_id, float(amount), status='success')
             
             # Update wallet balance
             wallet.balance += float(amount)
             wallet.updated_at = datetime.utcnow()
             
-            # Update transaction status and add M-Pesa receipt
+            # Update transaction status
             transaction.status = 'completed'
-            transaction.note = f'M-Pesa deposit successful - Receipt: {mpesa_receipt}'
-            transaction.mpesa_receipt_number = mpesa_receipt
+            transaction.note = f'Pesapay deposit successful - TXN: {pesapay_transaction_id}'
+            transaction.merchant_request_id = pesapay_transaction_id
             transaction.updated_at = datetime.utcnow()
             
             db.session.commit()
+            
+            # Send success notification
+            send_deposit_notification(wallet, float(amount), status='success')
             
             print(f"✅ Wallet updated! New balance: ${wallet.balance}")
             print(f"✅ Transaction {transaction.transaction_id} marked as completed")
             
-        else:
-            # Payment failed or cancelled
-            print(f"❌ Payment failed: {result_desc}")
+        elif status == 'failed':
+            print(f"❌ Payment failed")
             
             transaction.status = 'failed'
-            transaction.note = f'M-Pesa deposit failed - {result_desc}'
+            transaction.note = f'Pesapay deposit failed - {data.get("message", "Payment failed")}'
             transaction.updated_at = datetime.utcnow()
             
             db.session.commit()
             
+            # Send failure notification
+            send_deposit_notification(wallet, float(amount), status='failed')
+            
             print(f"❌ Transaction {transaction.transaction_id} marked as failed")
 
-        return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+        return jsonify({"status": "success", "message": "Callback processed"}), 200
 
     except Exception as e:
         db.session.rollback()
         print(f"❌ Callback error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({"ResultCode": 1, "ResultDesc": "Error"}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
+def verify_pesapay_callback_signature(data, signature):
+    """
+    Verify Pesapay callback signature for security
+    """
+    try:
+        # Implement signature verification based on Pesapay documentation
+        # This is a simplified version - adjust based on actual Pesapay requirements
+        expected_data = f"{data.get('reference')}{data.get('amount')}{data.get('currency')}{PESAPAY_API_SECRET}"
+        expected_signature = hashlib.sha256(expected_data.encode()).hexdigest()
+        
+        return signature == expected_signature
+    except Exception as e:
+        print(f"❌ Signature verification error: {str(e)}")
+        return False
 
+@bp.route('/payment-status/<reference>', methods=['GET'])
+@jwt_required()
+def check_payment_status(reference):
+    """Check Pesapay payment status by reference"""
+    try:
+        current_user_id = get_jwt_identity()
+        
+        print(f"🔍 Checking payment status for reference: {reference}")
+        print(f"👤 User ID: {current_user_id}")
+        
+        # Find the transaction by reference
+        transaction = Transaction.query.filter_by(transaction_id=reference).first()
+        
+        if not transaction:
+            print(f"❌ Transaction not found for reference: {reference}")
+            return jsonify({
+                'success': False,
+                'error': 'Transaction not found'
+            }), 404
+        
+        # Verify the transaction belongs to the current user
+        if transaction.sender_id != current_user_id:
+            return jsonify({
+                'success': False,
+                'error': 'Access denied'
+            }), 403
+        
+        # Optionally, you can also check with Pesapay API for latest status
+        status_from_pesapay = check_pesapay_transaction_status(reference)
+        
+        print(f"✅ Transaction found: {transaction.transaction_id}")
+        print(f"📊 Transaction status: {transaction.status}")
+        print(f"📊 Pesapay status: {status_from_pesapay}")
+        
+        return jsonify({
+            'success': True,
+            'status': transaction.status,
+            'pesapay_status': status_from_pesapay,
+            'transaction': transaction.to_dict(),
+            'message': f'Transaction is {transaction.status}'
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error checking payment status: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+def check_pesapay_transaction_status(reference):
+    """
+    Check transaction status directly from Pesapay API
+    """
+    try:
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        signature = generate_pesapay_signature(
+            PESAPAY_API_KEY,
+            PESAPAY_API_SECRET,
+            PESAPAY_MERCHANT_ID,
+            "0.00",  # Amount not needed for status check
+            "USD",
+            reference,
+            timestamp
+        )
+        
+        payload = {
+            "merchant_id": PESAPAY_MERCHANT_ID,
+            "api_key": PESAPAY_API_KEY,
+            "signature": signature,
+            "timestamp": timestamp,
+            "reference": reference
+        }
+        
+        status_url = f"{PESAPAY_BASE_URL}/v1/payments/status"
+        response = requests.post(status_url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('data', {}).get('status', 'unknown')
+        else:
+            return 'api_error'
+            
+    except Exception as e:
+        print(f"❌ Error checking Pesapay status: {str(e)}")
+        return 'check_failed'
+
+# Keep the existing wallet routes (get_wallet, add_funds) unchanged
 @bp.route('', methods=['GET'])
 @jwt_required()
 def get_wallet():
@@ -237,11 +369,10 @@ def get_wallet():
         print(f"Error in get_wallet: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-
 @bp.route('/add-funds', methods=['POST'])
 @jwt_required()
 def add_funds():
-    """Add funds to wallet"""
+    """Add funds to wallet (manual/admin)"""
     try:
         current_user_id = get_jwt_identity()
         wallet = Wallet.query.filter_by(user_id=current_user_id).first()
@@ -291,50 +422,3 @@ def add_funds():
         db.session.rollback()
         print(f"Error in add_funds: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
-
-@bp.route('/transaction-status/<checkout_request_id>', methods=['GET'])
-@jwt_required()
-def check_transaction_status(checkout_request_id):
-    """Check transaction status by CheckoutRequestID"""
-    try:
-        current_user_id = get_jwt_identity()
-        
-        print(f"🔍 Checking transaction status for CheckoutRequestID: {checkout_request_id}")
-        print(f"👤 User ID: {current_user_id}")
-        
-        # Find the transaction by checkout_request_id
-        transaction = Transaction.query.filter_by(
-            checkout_request_id=checkout_request_id
-        ).first()
-        
-        if not transaction:
-            print(f"❌ Transaction not found for CheckoutRequestID: {checkout_request_id}")
-            return jsonify({
-                'success': False,
-                'error': 'Transaction not found'
-            }), 404
-        
-        # Optional: Verify the transaction belongs to the current user
-        if transaction.sender_id != current_user_id:
-            return jsonify({
-                'success': False,
-                'error': 'Access denied'
-            }), 403
-        
-        print(f"✅ Transaction found: {transaction.transaction_id}")
-        print(f"📊 Transaction status: {transaction.status}")
-        
-        return jsonify({
-            'success': True,
-            'status': transaction.status,
-            'transaction': transaction.to_dict(),
-            'message': f'Transaction is {transaction.status}'
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ Error checking transaction status: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
