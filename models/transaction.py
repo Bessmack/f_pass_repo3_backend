@@ -18,6 +18,7 @@ class Transaction(db.Model):
     checkout_request_id = db.Column(db.String(100), index=True)  # M-Pesa checkout ID
     mpesa_receipt_number = db.Column(db.String(50))  # M-Pesa receipt number
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Add this line
     
     def to_dict(self):
         """Convert transaction to dictionary"""
@@ -32,7 +33,11 @@ class Transaction(db.Model):
             'type': self.type,
             'status': self.status,
             'note': self.note,
-            'created_at': self.created_at.isoformat() if self.created_at else None
+            'merchant_request_id': self.merchant_request_id,
+            'checkout_request_id': self.checkout_request_id,
+            'mpesa_receipt_number': self.mpesa_receipt_number,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
     
     def __repr__(self):

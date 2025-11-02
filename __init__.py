@@ -36,14 +36,25 @@ def create_app(config_name='development'):
     jwt.init_app(app)
     
     # Register blueprints
-    from routes import auth_routes, user_routes, wallet_routes, transaction_routes, beneficiary_routes, admin_routes
-    
+    from routes import (
+        auth_routes, 
+        user_routes, 
+        wallet_routes, 
+        transaction_routes, 
+        beneficiary_routes, 
+        admin_routes,
+        receipt_routes,      # NEW
+        notification_routes  # NEW
+    )
+
     app.register_blueprint(auth_routes.bp)
     app.register_blueprint(user_routes.bp)
     app.register_blueprint(wallet_routes.bp)
     app.register_blueprint(transaction_routes.bp)
     app.register_blueprint(beneficiary_routes.bp)
     app.register_blueprint(admin_routes.bp)
+    app.register_blueprint(receipt_routes.bp)
+    app.register_blueprint(notification_routes.bp)
     
     # Add health check endpoint
     @app.route('/api/health', methods=['GET'])

@@ -2,5 +2,6 @@ from models.user import User
 from models.wallet import Wallet
 from models.transaction import Transaction
 from models.beneficiary import Beneficiary
+from models.notification import Notification  # NEW
 
-__all__ = ['User', 'Wallet', 'Transaction', 'Beneficiary']
+__all__ = ['User', 'Wallet', 'Transaction', 'Beneficiary', 'Notification']

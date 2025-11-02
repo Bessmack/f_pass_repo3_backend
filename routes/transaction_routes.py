@@ -4,6 +4,7 @@ from __init__ import db
 from models import User, Wallet, Transaction
 from utils.helpers import generate_unique_id
 from datetime import datetime
+from utils.notification_helpers import send_transaction_notification
 
 bp = Blueprint('transaction', __name__, url_prefix='/api/transactions')
 
@@ -93,6 +94,8 @@ def send_money():
         print(f"   Transaction ID: {transaction.transaction_id}")
         print(f"   Sender new balance: ${sender_wallet.balance}")
         print(f"   Receiver new balance: ${receiver_wallet.balance}")
+
+        send_transaction_notification(transaction, sender_wallet, receiver_wallet)
 
         # Get receiver user details
         receiver_user = User.query.get(receiver_wallet.user_id)

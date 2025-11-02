@@ -6,6 +6,7 @@ from __init__ import db
 from models import Wallet, Transaction, User
 from utils.helpers import generate_unique_id
 import os
+from utils.notification_helpers import send_deposit_notification
 
 bp = Blueprint('wallet', __name__, url_prefix='/api/wallet')
 
@@ -176,14 +177,17 @@ def mpesa_callback():
             print(f"💰 Amount: {amount}")
             print(f"🧾 M-Pesa Receipt: {mpesa_receipt}")
             print(f"📱 Phone: {phone}")
+
+            send_deposit_notification(wallet.user_id, float(amount), status='success')
             
             # Update wallet balance
             wallet.balance += float(amount)
             wallet.updated_at = datetime.utcnow()
             
-            # Update transaction status
+            # Update transaction status and add M-Pesa receipt
             transaction.status = 'completed'
             transaction.note = f'M-Pesa deposit successful - Receipt: {mpesa_receipt}'
+            transaction.mpesa_receipt_number = mpesa_receipt
             transaction.updated_at = datetime.utcnow()
             
             db.session.commit()
@@ -287,3 +291,50 @@ def add_funds():
         db.session.rollback()
         print(f"Error in add_funds: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/transaction-status/<checkout_request_id>', methods=['GET'])
+@jwt_required()
+def check_transaction_status(checkout_request_id):
+    """Check transaction status by CheckoutRequestID"""
+    try:
+        current_user_id = get_jwt_identity()
+        
+        print(f"🔍 Checking transaction status for CheckoutRequestID: {checkout_request_id}")
+        print(f"👤 User ID: {current_user_id}")
+        
+        # Find the transaction by checkout_request_id
+        transaction = Transaction.query.filter_by(
+            checkout_request_id=checkout_request_id
+        ).first()
+        
+        if not transaction:
+            print(f"❌ Transaction not found for CheckoutRequestID: {checkout_request_id}")
+            return jsonify({
+                'success': False,
+                'error': 'Transaction not found'
+            }), 404
+        
+        # Optional: Verify the transaction belongs to the current user
+        if transaction.sender_id != current_user_id:
+            return jsonify({
+                'success': False,
+                'error': 'Access denied'
+            }), 403
+        
+        print(f"✅ Transaction found: {transaction.transaction_id}")
+        print(f"📊 Transaction status: {transaction.status}")
+        
+        return jsonify({
+            'success': True,
+            'status': transaction.status,
+            'transaction': transaction.to_dict(),
+            'message': f'Transaction is {transaction.status}'
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error checking transaction status: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
