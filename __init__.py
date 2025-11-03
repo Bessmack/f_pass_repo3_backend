@@ -14,19 +14,38 @@ jwt = JWTManager()
 def create_app(config_name='development'):
     app = Flask(__name__)
     
-    # Load configuration
-    from config import config
-    app.config.from_object(config[config_name])
+    # Handle Render PostgreSQL database URL
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url:
+        # Fix for Render's PostgreSQL URL format
+        if database_url.startswith('postgres://'):
+            database_url = database_url.replace('postgres://', 'postgresql://', 1)
+        app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+        print("✅ Using PostgreSQL database from DATABASE_URL")
+    else:
+        # Fallback for local development
+        from config import config
+        app.config.from_object(config[config_name])
+        print(f"✅ Using database from config: {config_name}")
     
-    # Initialize CORS with proper configuration
+    # Load other configuration from config.py
+    from config import config
+    if not database_url:  # Only use config file if no DATABASE_URL
+        app.config.from_object(config[config_name])
+    
+    # Set other essential configs
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', app.config.get('SECRET_KEY', 'fallback-secret'))
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', app.config.get('JWT_SECRET_KEY', 'fallback-jwt-secret'))
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # Initialize CORS
     CORS(app, 
          resources={r"/api/*": {
-             "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+             "origins": os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(','),
              "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
              "allow_headers": ["Content-Type", "Authorization"],
              "expose_headers": ["Content-Type", "Authorization"],
              "supports_credentials": True,
-             "send_wildcard": False,
              "max_age": 3600
          }})
     
@@ -35,16 +54,10 @@ def create_app(config_name='development'):
     bcrypt.init_app(app)
     jwt.init_app(app)
     
-    # Register blueprints
+    # Register blueprints (your existing code)
     from routes import (
-        auth_routes, 
-        user_routes, 
-        wallet_routes, 
-        transaction_routes, 
-        beneficiary_routes, 
-        admin_routes,
-        receipt_routes,      # NEW
-        notification_routes  # NEW
+        auth_routes, user_routes, wallet_routes, transaction_routes, 
+        beneficiary_routes, admin_routes, receipt_routes, notification_routes
     )
 
     app.register_blueprint(auth_routes.bp)
@@ -71,11 +84,15 @@ def create_app(config_name='development'):
         db.session.rollback()
         return {'error': 'Internal server error'}, 500
     
-    # Create tables and seed data
+    # Create tables
     with app.app_context():
-        db.create_all()
-        from utils.seed import create_default_admin
-        create_default_admin()
-        print("✅ Database tables created successfully")
+        try:
+            db.create_all()
+            from utils.seed import create_default_admin
+            create_default_admin()
+            print("✅ Database tables created successfully")
+        except Exception as e:
+            print(f"❌ Database error: {str(e)}")
+            # Don't raise error, just log it
     
     return app

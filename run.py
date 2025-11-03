@@ -1,6 +1,7 @@
 from __init__ import create_app
+import os
 
-app = create_app('development')
+app = create_app(os.environ.get('FLASK_ENV', 'production'))
 
 if __name__ == "__main__":
     print("🚀 Starting Money Transfer API...")
@@ -8,8 +9,5 @@ if __name__ == "__main__":
     print("📍 Health check: http://localhost:5000/api/health")
     print("👤 Default admin: admin@example.com / admin123")
     
-    app.run(
-        host="0.0.0.0",
-        port=5000,
-        debug=False
-    )
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)
