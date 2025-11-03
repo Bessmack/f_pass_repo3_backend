@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class Config:
     """Base configuration"""
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -15,7 +16,7 @@ class Config:
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
     
-    # CORS Configuration
+    # CORS Configu`ration
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(',')
     
     # Transaction Configuration
@@ -26,17 +27,17 @@ class Config:
     # Pagination
     ITEMS_PER_PAGE = 20
 
+
 class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = True
-    # Use SQLite for local development
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///money_transfer.db')
     SQLALCHEMY_ECHO = False
+
 
 class ProductionConfig(Config):
     """Production configuration"""
     DEBUG = False
-    # PostgreSQL will be provided via DATABASE_URL environment variable
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
     SQLALCHEMY_ECHO = False
     
@@ -45,11 +46,13 @@ class ProductionConfig(Config):
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
 
+
 class TestingConfig(Config):
     """Testing configuration"""
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///test_money_transfer.db'
     WTF_CSRF_ENABLED = False
+
 
 config = {
     'development': DevelopmentConfig,
