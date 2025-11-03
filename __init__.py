@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
@@ -39,15 +39,31 @@ def create_app(config_name='development'):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     # Initialize CORS
+    cors_origins = os.environ.get('CORS_ORIGINS', 'http://localhost:5173')
+    if isinstance(cors_origins, str):
+        cors_origins = [origin.strip() for origin in cors_origins.split(',')]
+
     CORS(app, 
-         resources={r"/api/*": {
-             "origins": os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(','),
-             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-             "allow_headers": ["Content-Type", "Authorization"],
-             "expose_headers": ["Content-Type", "Authorization"],
-             "supports_credentials": True,
-             "max_age": 3600
-         }})
+        resources={r"/api/*": {
+            "origins": cors_origins,
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization", "x-access-token"],
+            "expose_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True,
+            "max_age": 3600
+        }},
+        supports_credentials=True)
+
+    # Add CORS headers to all responses
+    @app.after_request
+    def after_request(response):
+        origin = request.headers.get('Origin')
+        if origin in cors_origins:
+            response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-access-token')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
     
     # Initialize extensions
     db.init_app(app)
@@ -83,6 +99,36 @@ def create_app(config_name='development'):
     def internal_error(error):
         db.session.rollback()
         return {'error': 'Internal server error'}, 500
+    
+    # Add health check endpoint
+    @app.route('/api/health', methods=['GET'])
+    def health_check():
+        return {
+            'status': 'healthy', 
+            'message': 'API is running',
+            'environment': os.environ.get('FLASK_ENV', 'unknown'),
+            'cors_origins': os.environ.get('CORS_ORIGINS', 'not set')
+        }, 200
+
+    @app.route('/api/debug', methods=['GET'])
+    def debug_info():
+        return {
+            'cors_configured': True,
+            'environment': os.environ.get('FLASK_ENV', 'unknown'),
+            'frontend_url': 'https://f-pass-repo3.vercel.app',
+            'database_configured': bool(os.environ.get('DATABASE_URL')),
+            'allowed_origins': os.environ.get('CORS_ORIGINS', '').split(',')
+        }, 200
+
+    @app.route('/api/test-cors', methods=['GET', 'POST', 'OPTIONS'])
+    def test_cors():
+        if request.method == 'OPTIONS':
+            return '', 200
+        return {
+            'message': 'CORS is working!',
+            'method': request.method,
+            'origin': request.headers.get('Origin')
+        }, 200
     
     # Create tables
     with app.app_context():
