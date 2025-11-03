@@ -8,6 +8,8 @@ from models import Wallet, Transaction, User
 from utils.helpers import generate_unique_id
 import os
 from utils.notification_helpers import send_deposit_notification
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 bp = Blueprint('wallet', __name__, url_prefix='/api/wallet')
 
@@ -20,6 +22,11 @@ PESAPAY_CALLBACK_URL = os.getenv("PESAPAY_CALLBACK_URL")
 
 # Token cache to avoid requesting new token on every request
 _token_cache = {'token': None, 'expires_at': None}
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 def get_pesapal_token():
     """
@@ -199,6 +206,7 @@ def pesapay_deposit():
         return jsonify({'error': str(e)}), 500
 
 @bp.route('/pesapay-callback', methods=['POST', 'GET'])
+@limiter.limit("10 per minute")  # More restrictive for IPN
 def pesapay_callback():
     """
     Handle Pesapal IPN (Instant Payment Notification)
